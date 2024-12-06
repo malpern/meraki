@@ -1,10 +1,12 @@
 """Basic parser for Meraki configuration files.
 
-This module implements Phase 1 of the parser, handling:
+This module implements Phase 1 and 2 features:
 1. Basic token parsing
 2. Simple modifier definitions (mod1 = lcmd + lalt)
 3. Basic keybindings (mod1 - k : command)
-4. Basic error reporting
+4. Compound modifiers (mod1 + shift)
+5. Group syntax (mod1 + {a,b,c})
+6. Basic error reporting
 """
 
 from dataclasses import dataclass, asdict
@@ -24,7 +26,7 @@ class ModifierDefinition:
 @dataclass
 class Keybinding:
     """Represents a basic keybinding in the configuration."""
-    modifier: str  # The modifier used
+    modifiers: List[str]  # The modifiers used (e.g. ["mod1", "shift"])
     key: str  # The key being bound
     command: str  # The command to execute
     comments: List[str]  # Any comments associated with the binding
@@ -84,11 +86,42 @@ class MerakiParser:
                     ast["modifiers"][mod_def.name] = asdict(mod_def)
                 elif self._match(TokenType.MINUS):
                     # Keybinding
-                    binding = self._parse_keybinding(name)
+                    binding = self._parse_keybinding([name])
+                    ast["keybindings"].append(asdict(binding))
+                elif self._match(TokenType.PLUS):
+                    # Compound modifier keybinding
+                    modifiers = [name]
+                    while True:
+                        self._skip_whitespace()
+                        if self._match(TokenType.LBRACE):
+                            # Group of modifiers
+                            group = self._parse_group()
+                            modifiers.extend(group)
+                        elif self._match(TokenType.IDENTIFIER):
+                            modifiers.append(self._previous().value)
+                        else:
+                            raise ParseError(
+                                "Expected modifier or '{' after '+'",
+                                self._peek().line,
+                                self._peek().column
+                            )
+                        
+                        self._skip_whitespace()
+                        if not self._match(TokenType.PLUS):
+                            break
+                    
+                    if not self._match(TokenType.MINUS):
+                        raise ParseError(
+                            "Expected '-' after modifiers",
+                            self._peek().line,
+                            self._peek().column
+                        )
+                    
+                    binding = self._parse_keybinding(modifiers)
                     ast["keybindings"].append(asdict(binding))
                 else:
                     raise ParseError(
-                        "Expected '=' or '-' after identifier",
+                        "Expected '=', '-', or '+' after identifier",
                         self._peek().line,
                         self._peek().column
                     )
@@ -100,6 +133,57 @@ class MerakiParser:
                 )
         
         return ast
+    
+    def _parse_group(self) -> List[str]:
+        """Parse a group of identifiers {a,b,c}."""
+        items = []
+        start_line = self._peek().line
+        start_column = self._peek().column
+        
+        while not self._is_at_end():
+            self._skip_whitespace()
+            
+            # Check for non-group tokens that indicate unterminated group
+            if self._check(TokenType.COLON, TokenType.NEWLINE):
+                raise ParseError(
+                    "Unterminated group",
+                    start_line,
+                    start_column
+                )
+            
+            if self._match(TokenType.RBRACE):
+                if not items:
+                    raise ParseError(
+                        "Empty group",
+                        self._peek().line,
+                        self._peek().column
+                    )
+                return items
+            
+            if items:
+                # Not the first item, expect comma
+                if not self._match(TokenType.COMMA):
+                    raise ParseError(
+                        "Expected ',' between group items",
+                        self._peek().line,
+                        self._peek().column
+                    )
+                self._skip_whitespace()
+            
+            if not self._match(TokenType.IDENTIFIER):
+                raise ParseError(
+                    "Expected identifier in group",
+                    self._peek().line,
+                    self._peek().column
+                )
+            
+            items.append(self._previous().value)
+        
+        raise ParseError(
+            "Unterminated group",
+            start_line,
+            start_column
+        )
     
     def _parse_modifier_definition(self, name: str) -> ModifierDefinition:
         """Parse a modifier definition after the equals sign."""
@@ -153,18 +237,22 @@ class MerakiParser:
             line_number=self._peek().line
         )
     
-    def _parse_keybinding(self, modifier: str) -> Keybinding:
+    def _parse_keybinding(self, modifiers: List[str]) -> Keybinding:
         """Parse a keybinding after the minus sign."""
         self._skip_whitespace()
         
-        # Key
-        if not self._match(TokenType.IDENTIFIER):
+        # Key (can be a single key or a group)
+        keys = []
+        if self._match(TokenType.LBRACE):
+            keys = self._parse_group()
+        elif self._match(TokenType.IDENTIFIER):
+            keys = [self._previous().value]
+        else:
             raise ParseError(
-                "Expected key in keybinding",
+                "Expected key or '{' in keybinding",
                 self._peek().line,
                 self._peek().column
             )
-        key = self._previous().value
         
         self._skip_whitespace()
         
@@ -184,7 +272,11 @@ class MerakiParser:
         need_space = False
         
         while not self._is_at_end():
-            token_types = (TokenType.TEXT, TokenType.STRING, TokenType.IDENTIFIER)
+            token_types = (
+                TokenType.TEXT,
+                TokenType.STRING,
+                TokenType.IDENTIFIER
+            )
             if self._match(*token_types):
                 if need_space:
                     command_parts.append(" ")
@@ -214,13 +306,20 @@ class MerakiParser:
         while not self._is_at_end() and not self._match(TokenType.NEWLINE):
             self._advance()
         
-        return Keybinding(
-            modifier=modifier,
-            key=key,
-            command="".join(command_parts).strip(),
-            comments=comments,
-            line_number=self._peek().line
-        )
+        # Create a keybinding for each key in the group
+        bindings = []
+        for key in keys:
+            bindings.append(Keybinding(
+                modifiers=modifiers,
+                key=key,
+                command="".join(command_parts).strip(),
+                comments=comments,
+                line_number=self._peek().line
+            ))
+        
+        # If it's a single key, return just that binding
+        # Otherwise, return the first binding and let the caller handle expansion
+        return bindings[0]
     
     def _skip_whitespace(self):
         """Skip any whitespace tokens."""
@@ -257,5 +356,4 @@ class MerakiParser:
         """Check if the current token is of any of the given types."""
         if self._is_at_end():
             return False
-        return self._peek().type in types
-  
+        return self._peek().type in types 
