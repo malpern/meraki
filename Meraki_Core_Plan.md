@@ -139,7 +139,7 @@ mod1 - k : focus --app "kitty"
 ### Feature Coverage Analysis (vs Official merakirc):
 
 1. **Supported in v0.1**:
-   - ✅ Basic modifier definitions (`mod1 = lcmd + lalt`)
+   - ✅ Basic modifier definitions (`modwe1 = lcmd + lalt`)
    - ✅ Standard modifier support (`cmd`, `alt`, `ctrl`, `shift`)
    - ✅ Basic keybindings with modifiers
    - ✅ Application launching and focus

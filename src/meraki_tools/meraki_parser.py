@@ -1,278 +1,261 @@
-from typing import Dict, List, Union, Optional
-from dataclasses import dataclass
-from pyparsing import (
-    Word, alphas, alphanums, Forward, Group, OneOrMore,
-    ZeroOrMore, Suppress, White, LineEnd, pythonStyleComment,
-    delimitedList, Optional as Optional_, ParseResults,
-    restOfLine, LineStart, White, stringEnd, QuotedString,
-    nums, nestedExpr, originalTextFor
-)
+"""Basic parser for Meraki configuration files.
+
+This module implements Phase 1 of the parser, handling:
+1. Basic token parsing
+2. Simple modifier definitions (mod1 = lcmd + lalt)
+3. Basic keybindings (mod1 - k : command)
+4. Basic error reporting
+"""
+
+from dataclasses import dataclass, asdict
+from typing import Dict, List
+from .meraki_lexer import TokenType, Token, create_lexer
+
 
 @dataclass
 class ModifierDefinition:
-    keys: List[str]
-    comments: List[str]
-    line_number: int
+    """Represents a modifier definition in the configuration."""
+    name: str  # The name of the modifier (e.g. mod1)
+    keys: List[str]  # The two keys that make up the modifier
+    comments: List[str]  # Any comments associated with the definition
+    line_number: int  # Line number where the definition appears
+
 
 @dataclass
 class Keybinding:
-    key_combination: str
-    key: str
-    action: str
-    comments: List[str]
-    line_number: int
-    timeout: Optional[int] = None
-    nested_bindings: Optional[Dict[str, 'Keybinding']] = None
+    """Represents a basic keybinding in the configuration."""
+    modifier: str  # The modifier used
+    key: str  # The key being bound
+    command: str  # The command to execute
+    comments: List[str]  # Any comments associated with the binding
+    line_number: int  # Line number where the binding appears
+
+
+class ParseError(Exception):
+    """Exception raised for parsing errors."""
+    def __init__(self, message: str, line: int, column: int):
+        self.message = message
+        self.line = line
+        self.column = column
+        super().__init__(f"Line {line}, Column {column}: {message}")
+
 
 class MerakiParser:
-    def __init__(self):
-        self._setup_grammar()
+    """Basic parser for Meraki configuration files."""
     
-    def _setup_grammar(self):
-        # Basic elements
-        modifier = Word(alphas.lower() + alphanums + "_")
-        key = Word(alphas.lower())
-        
-        # Comments
-        self.comment = pythonStyleComment.setResultsName("comment")
-        
-        # Timeout definition
-        timeout = (
-            Suppress("[") + 
-            Word(nums).setResultsName("timeout") + 
-            Suppress("ms") + 
-            Suppress("]")
-        ).setResultsName("timeout_def")
-        
-        # Modifier definition
-        key_word = Word(alphas.lower())
-        key_plus_key = (key_word("key1") + Suppress("+") + key_word("key2"))
-        self.modifier_def = (
-            Optional_(White()) +
-            Optional_(self.comment)("leading_comment") +
-            Optional_(White()) +
-            modifier("name") + 
-            Optional_(White()) +
-            Suppress("=") + 
-            Optional_(White()) +
-            key_plus_key +
-            Optional_(White()) +
-            Optional_(self.comment)("trailing_comment") +
-            Optional_(White()) +
-            (LineEnd() | stringEnd)
-        )
-        
-        # Action definition
-        action = restOfLine.setResultsName("action")
-        
-        # Basic keybinding (without nested blocks)
-        self.keybinding = (
-            Optional_(White()) +
-            Optional_(self.comment)("leading_comment") +
-            Optional_(White()) +
-            modifier("mod") +
-            Optional_(White()) +
-            Suppress("-") +
-            Optional_(White()) +
-            key("key") +
-            Optional_(White()) +
-            Optional_(timeout) +
-            Optional_(White()) +
-            Suppress(":") +
-            Optional_(White()) +
-            action
-        )
-        
-        # Block keybinding
-        self.block_keybinding = (
-            Optional_(White()) +
-            Optional_(self.comment)("leading_comment") +
-            Optional_(White()) +
-            modifier("mod") +
-            Optional_(White()) +
-            Suppress("-") +
-            Optional_(White()) +
-            key("key") +
-            Optional_(White()) +
-            Optional_(timeout) +
-            Optional_(White()) +
-            Suppress(":")
-        )
+    def __init__(self):
+        """Initialize the parser."""
+        self.lexer = create_lexer()
+        self.tokens = []
+        self.current = 0
     
     def parse_string(self, content: str) -> Dict:
         """Parse a Meraki config string and return an AST."""
-        result = {
+        # Initialize parser state
+        self.tokens = list(self.lexer.tokenize(content))
+        self.current = 0
+        
+        # Initialize AST
+        ast = {
             "modifiers": {},
-            "keybindings": []
+            "keybindings": [],
+            "comments": []
         }
         
-        # First pass: collect all lines and identify blocks
-        lines = content.splitlines()
-        current_line = 0
-        
-        while current_line < len(lines):
-            line = lines[current_line]
-            stripped = line.strip()
-            if not stripped:
-                current_line += 1
+        while not self._is_at_end():
+            # Skip whitespace and newlines
+            if self._match(TokenType.WHITESPACE, TokenType.NEWLINE):
                 continue
             
-            try:
-                # Try to parse as modifier definition
-                parsed = self.modifier_def.parseString(stripped, parseAll=True)
-                
-                comments = []
-                if "leading_comment" in parsed:
-                    comments.append(parsed.leading_comment.strip())
-                if "trailing_comment" in parsed:
-                    comments.append(parsed.trailing_comment.strip())
-                
-                result["modifiers"][parsed.name] = {
-                    "keys": [parsed.key1, parsed.key2],
-                    "comments": [c for c in comments if c],
-                    "line_number": current_line + 1
-                }
-                current_line += 1
-            except Exception:
-                try:
-                    # Check if this is a block-style keybinding
-                    if "{" in line:
-                        # Parse the header
-                        header = stripped.split("{")[0].strip()
-                        
-                        # Extract timeout if present
-                        timeout = None
-                        if "[" in header and "]" in header:
-                            timeout_start = header.find("[") + 1
-                            timeout_end = header.find("ms]")
-                            if timeout_start > 0 and timeout_end > timeout_start:
-                                timeout = int(header[timeout_start:timeout_end])
-                                header = header[:timeout_start - 1].strip() + " : " + header[timeout_end + 3:].strip()
-                        
-                        # Parse the header without the timeout
-                        header_parts = header.split(":")
-                        if len(header_parts) >= 1:
-                            binding_def = header_parts[0].strip()
-                            if "-" in binding_def:
-                                mod, key = binding_def.split("-", 1)
-                                mod = mod.strip()
-                                key = key.strip()
-                                
-                                # Collect the block content
-                                block_lines = []
-                                brace_count = line.count("{") - line.count("}")
-                                base_indent = len(line) - len(line.lstrip())
-                                
-                                # Add any content after the opening brace
-                                if "{" in line:
-                                    content_after_brace = line.split("{", 1)[1].strip().rstrip("}")
-                                    if content_after_brace:
-                                        block_lines.append(content_after_brace)
-                                
-                                while brace_count > 0 and current_line + 1 < len(lines):
-                                    current_line += 1
-                                    next_line = lines[current_line]
-                                    indent = len(next_line) - len(next_line.lstrip())
-                                    stripped_next = next_line.strip()
-                                    
-                                    if stripped_next:
-                                        if indent > base_indent or "}" in stripped_next:
-                                            block_lines.append(stripped_next)
-                                        brace_count += stripped_next.count("{") - stripped_next.count("}")
-                                
-                                binding = {
-                                    "key_combination": mod,
-                                    "key": key,
-                                    "action": None,
-                                    "comments": [],
-                                    "line_number": current_line + 1,
-                                    "timeout": timeout,
-                                    "nested_bindings": self._parse_nested_block("\n".join(block_lines))
-                                }
-                                
-                                result["keybindings"].append(binding)
-                        current_line += 1
-                    else:
-                        # Try to parse as simple keybinding
-                        parsed = self.keybinding.parseString(stripped)
-                        
-                        binding = {
-                            "key_combination": parsed.mod,
-                            "key": parsed.key,
-                            "action": parsed.action.strip(),
-                            "comments": [],
-                            "line_number": current_line + 1,
-                            "timeout": int(parsed.timeout_def.timeout) if "timeout_def" in parsed else None,
-                            "nested_bindings": None
-                        }
-                        
-                        result["keybindings"].append(binding)
-                        current_line += 1
-                except Exception as e:
-                    print(f"Error parsing line {current_line + 1}: {e}")
-                    print(f"Line content: {line}")
-                    print(f"Stripped content: {stripped}")
-                    current_line += 1
-        
-        return result
-    
-    def _parse_nested_block(self, block: str) -> Dict[str, Dict]:
-        """Parse a nested block into a dictionary structure."""
-        result = {}
-        
-        # Split the block into individual bindings
-        lines = block.splitlines()
-        current_line = 0
-        
-        while current_line < len(lines):
-            line = lines[current_line].strip().rstrip(";")
-            if not line:
-                current_line += 1
+            # Handle comments
+            if self._match(TokenType.COMMENT):
+                # Remove # and whitespace
+                ast["comments"].append(self._previous().value[1:].strip())
                 continue
             
-            if "{" in line:
-                # This is a nested block
-                key = line.split(":", 1)[0].strip()
-                block_lines = []
-                brace_count = line.count("{") - line.count("}")
+            # Parse modifier definition or keybinding
+            if self._match(TokenType.IDENTIFIER):
+                name = self._previous().value
+                self._skip_whitespace()
                 
-                # Add any content after the opening brace
-                if "{" in line:
-                    content_after_brace = line.split("{", 1)[1].strip().rstrip("}")
-                    if content_after_brace:
-                        block_lines.append(content_after_brace)
-                
-                while brace_count > 0 and current_line + 1 < len(lines):
-                    current_line += 1
-                    next_line = lines[current_line].strip()
-                    if next_line:
-                        block_lines.append(next_line)
-                        brace_count += next_line.count("{") - next_line.count("}")
-                
-                result[key] = {
-                    "action": None,
-                    "nested_bindings": self._parse_nested_block("\n".join(block_lines))
-                }
-                current_line += 1
+                if self._match(TokenType.EQUALS):
+                    # Modifier definition
+                    mod_def = self._parse_modifier_definition(name)
+                    ast["modifiers"][mod_def.name] = asdict(mod_def)
+                elif self._match(TokenType.MINUS):
+                    # Keybinding
+                    binding = self._parse_keybinding(name)
+                    ast["keybindings"].append(asdict(binding))
+                else:
+                    raise ParseError(
+                        "Expected '=' or '-' after identifier",
+                        self._peek().line,
+                        self._peek().column
+                    )
             else:
-                # This is a simple binding
-                try:
-                    key, value = line.split(":", 1)
-                    key = key.strip()
-                    value = value.strip()
-                    
-                    result[key] = {
-                        "action": value,
-                        "nested_bindings": None
-                    }
-                except Exception:
-                    pass
-                current_line += 1
+                raise ParseError(
+                    f"Unexpected token: {self._peek().type}",
+                    self._peek().line,
+                    self._peek().column
+                )
         
-        return result
+        return ast
     
-    def parse_file(self, file_path: str) -> Dict:
-        """Parse a Meraki config file and return an AST."""
-        with open(file_path, 'r') as f:
-            content = f.read()
-        return self.parse_string(content) 
+    def _parse_modifier_definition(self, name: str) -> ModifierDefinition:
+        """Parse a modifier definition after the equals sign."""
+        self._skip_whitespace()
+        
+        # First key
+        if not self._match(TokenType.IDENTIFIER):
+            raise ParseError(
+                "Expected first key in modifier definition",
+                self._peek().line,
+                self._peek().column
+            )
+        key1 = self._previous().value
+        
+        self._skip_whitespace()
+        
+        # Plus sign
+        if not self._match(TokenType.PLUS):
+            raise ParseError(
+                "Expected '+' between keys",
+                self._peek().line,
+                self._peek().column
+            )
+        
+        self._skip_whitespace()
+        
+        # Second key
+        if not self._match(TokenType.IDENTIFIER):
+            raise ParseError(
+                "Expected second key in modifier definition",
+                self._peek().line,
+                self._peek().column
+            )
+        key2 = self._previous().value
+        
+        # Handle optional comment
+        comments = []
+        self._skip_whitespace()
+        if self._match(TokenType.COMMENT):
+            # Remove # and whitespace
+            comments.append(self._previous().value[1:].strip())
+        
+        # Skip to end of line
+        while not self._is_at_end() and not self._match(TokenType.NEWLINE):
+            self._advance()
+        
+        return ModifierDefinition(
+            name=name,
+            keys=[key1, key2],
+            comments=comments,
+            line_number=self._peek().line
+        )
+    
+    def _parse_keybinding(self, modifier: str) -> Keybinding:
+        """Parse a keybinding after the minus sign."""
+        self._skip_whitespace()
+        
+        # Key
+        if not self._match(TokenType.IDENTIFIER):
+            raise ParseError(
+                "Expected key in keybinding",
+                self._peek().line,
+                self._peek().column
+            )
+        key = self._previous().value
+        
+        self._skip_whitespace()
+        
+        # Colon
+        if not self._match(TokenType.COLON):
+            raise ParseError(
+                "Expected ':' after key",
+                self._peek().line,
+                self._peek().column
+            )
+        
+        # Command (collect all text/string tokens until newline or comment)
+        command_parts = []
+        self._skip_whitespace()
+        
+        # Track if we need to add space between parts
+        need_space = False
+        
+        while not self._is_at_end():
+            token_types = (TokenType.TEXT, TokenType.STRING, TokenType.IDENTIFIER)
+            if self._match(*token_types):
+                if need_space:
+                    command_parts.append(" ")
+                command_parts.append(self._previous().value)
+                need_space = True
+            elif self._match(TokenType.WHITESPACE):
+                need_space = True
+            elif self._check(TokenType.COMMENT, TokenType.NEWLINE):
+                break
+            else:
+                self._advance()  # Skip other tokens
+        
+        if not command_parts:
+            raise ParseError(
+                "Expected command after ':'",
+                self._peek().line,
+                self._peek().column
+            )
+        
+        # Handle optional comment
+        comments = []
+        if self._match(TokenType.COMMENT):
+            # Remove # and whitespace
+            comments.append(self._previous().value[1:].strip())
+        
+        # Skip to end of line
+        while not self._is_at_end() and not self._match(TokenType.NEWLINE):
+            self._advance()
+        
+        return Keybinding(
+            modifier=modifier,
+            key=key,
+            command="".join(command_parts).strip(),
+            comments=comments,
+            line_number=self._peek().line
+        )
+    
+    def _skip_whitespace(self):
+        """Skip any whitespace tokens."""
+        while self._match(TokenType.WHITESPACE):
+            pass
+    
+    def _is_at_end(self) -> bool:
+        """Check if we've reached the end of the token stream."""
+        return self._peek().type == TokenType.EOF
+    
+    def _peek(self) -> Token:
+        """Return the current token without consuming it."""
+        return self.tokens[self.current]
+    
+    def _previous(self) -> Token:
+        """Return the most recently consumed token."""
+        return self.tokens[self.current - 1]
+    
+    def _advance(self) -> Token:
+        """Consume and return the current token."""
+        if not self._is_at_end():
+            self.current += 1
+        return self._previous()
+    
+    def _match(self, *types: TokenType) -> bool:
+        """Check if the current token matches any of the given types."""
+        for type_ in types:
+            if self._check(type_):
+                self._advance()
+                return True
+        return False
+    
+    def _check(self, *types: TokenType) -> bool:
+        """Check if the current token is of any of the given types."""
+        if self._is_at_end():
+            return False
+        return self._peek().type in types
+  

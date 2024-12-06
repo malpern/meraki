@@ -1,81 +1,125 @@
-from typing import Dict, List, Set, Tuple
+from dataclasses import dataclass
+from typing import List, Dict, Optional
 
-class ValidationError:
-    def __init__(self, message: str, line_number: int):
-        self.message = message
-        self.line_number = line_number
-
-    def __str__(self):
-        return f"Line {self.line_number}: {self.message}"
+@dataclass
+class ValidationResult:
+    """Result of AST validation."""
+    is_valid: bool
+    errors: List[str]
+    warnings: List[str]
 
 class MerakiValidator:
-    def __init__(self):
-        self.errors: List[ValidationError] = []
-        self.warnings: List[ValidationError] = []
+    """Validates Meraki AST structure and semantics."""
     
-    def validate(self, ast: Dict) -> Tuple[List[ValidationError], List[ValidationError]]:
-        """Validate a Meraki AST and return a tuple of (errors, warnings)."""
+    def __init__(self):
+        """Initialize validator."""
+        self.errors = []
+        self.warnings = []
+    
+    def validate(self, ast: Dict) -> ValidationResult:
+        """Validate AST structure and semantics."""
         self.errors = []
         self.warnings = []
         
-        # Check for undefined modifiers in keybindings first
-        self._check_undefined_modifiers(ast)
+        # Validate required top-level keys
+        if "modifiers" not in ast:
+            self.errors.append("Missing 'modifiers' section")
+        if "keybindings" not in ast:
+            self.errors.append("Missing 'keybindings' section")
         
-        # Only check for unused modifiers if all modifiers are defined
-        if not self.errors:
-            self._check_unused_modifiers(ast)
+        # Validate modifiers
+        if "modifiers" in ast:
+            self._validate_modifiers(ast["modifiers"])
         
-        # Check for duplicate keybindings
-        self._check_duplicate_keybindings(ast)
+        # Validate keybindings
+        if "keybindings" in ast:
+            self._validate_keybindings(ast["keybindings"], ast.get("modifiers", {}))
         
-        return self.errors, self.warnings
+        return ValidationResult(
+            is_valid=len(self.errors) == 0,
+            errors=self.errors,
+            warnings=self.warnings
+        )
     
-    def _check_unused_modifiers(self, ast: Dict):
-        """Check for modifiers that are defined but never used."""
-        defined_modifiers = set(ast["modifiers"].keys())
-        used_modifiers = set()
-        
-        # Collect all used modifiers from keybindings
-        for binding in ast["keybindings"]:
-            used_modifiers.add(binding["key_combination"])
-        
-        # Find unused modifiers
-        unused_modifiers = defined_modifiers - used_modifiers
-        for modifier in unused_modifiers:
-            line_number = ast["modifiers"][modifier]["line_number"]
-            self.warnings.append(
-                ValidationError(
-                    f"Modifier '{modifier}' is defined but never used",
-                    line_number
-                )
-            )
+    def _validate_modifiers(self, modifiers: Dict) -> None:
+        """Validate modifier definitions."""
+        for name, mod in modifiers.items():
+            if not isinstance(mod, dict):
+                self.errors.append(f"Invalid modifier definition for '{name}'")
+                continue
+            
+            if "keys" not in mod:
+                self.errors.append(f"Missing keys in modifier '{name}'")
+            elif not isinstance(mod["keys"], list) or len(mod["keys"]) != 2:
+                self.errors.append(f"Invalid keys format in modifier '{name}'")
+            
+            if "line_number" not in mod:
+                self.warnings.append(f"Missing line number in modifier '{name}'")
     
-    def _check_duplicate_keybindings(self, ast: Dict):
-        """Check for duplicate keybindings."""
-        seen_bindings = {}  # (modifier, key) -> line_number
-        
-        for binding in ast["keybindings"]:
-            key = (binding["key_combination"], binding["key"])
-            if key in seen_bindings:
-                self.errors.append(
-                    ValidationError(
-                        f"Duplicate keybinding '{key[0]} - {key[1]}' (previously defined at line {seen_bindings[key]})",
-                        binding["line_number"]
-                    )
-                )
+    def _validate_keybindings(self, keybindings: List[Dict], modifiers: Dict) -> None:
+        """Validate keybinding definitions."""
+        for binding in keybindings:
+            if not isinstance(binding, dict):
+                self.errors.append("Invalid keybinding definition")
+                continue
+            
+            # Validate key combination
+            if "key_combination" not in binding:
+                self.errors.append("Missing key combination in keybinding")
             else:
-                seen_bindings[key] = binding["line_number"]
+                self._validate_key_combination(binding["key_combination"], modifiers)
+            
+            # Validate key
+            if "key" in binding and binding["key"] is not None:
+                if not isinstance(binding["key"], str):
+                    self.errors.append("Invalid key format")
+            
+            # Validate action or actions
+            if "action" not in binding and "actions" not in binding:
+                self.errors.append("Missing action in keybinding")
+            elif "actions" in binding:
+                if not isinstance(binding["actions"], list):
+                    self.errors.append("Invalid actions format")
+                elif not all(isinstance(a, dict) and "command" in a for a in binding["actions"]):
+                    self.errors.append("Invalid action format in command chain")
+            
+            # Validate timeout
+            if "timeout" in binding and binding["timeout"] is not None:
+                if not isinstance(binding["timeout"], int):
+                    self.errors.append("Invalid timeout format")
+                elif binding["timeout"] < 0:
+                    self.errors.append("Timeout cannot be negative")
+            
+            # Validate nested bindings
+            if "nested_bindings" in binding and binding["nested_bindings"] is not None:
+                if not isinstance(binding["nested_bindings"], dict):
+                    self.errors.append("Invalid nested bindings format")
+                else:
+                    self._validate_nested_bindings(binding["nested_bindings"])
+            
+            # Validate line number
+            if "line_number" not in binding:
+                self.warnings.append("Missing line number in keybinding")
     
-    def _check_undefined_modifiers(self, ast: Dict):
-        """Check for keybindings that use undefined modifiers."""
-        defined_modifiers = set(ast["modifiers"].keys())
+    def _validate_key_combination(self, key_combination: str, modifiers: Dict) -> None:
+        """Validate key combination against defined modifiers."""
+        parts = key_combination.split()
+        if not parts:
+            self.errors.append("Empty key combination")
+            return
         
-        for binding in ast["keybindings"]:
-            modifier = binding["key_combination"]
-            if modifier not in defined_modifiers:
-                self.errors.append(
-                    ValidationError(
-                        f"Keybinding uses undefined modifier '{modifier}'",
-                        binding["line_number"]
-                    )
-                ) 
+        base_mod = parts[0]
+        if base_mod not in modifiers:
+            self.errors.append(f"Undefined modifier '{base_mod}'")
+    
+    def _validate_nested_bindings(self, nested_bindings: Dict) -> None:
+        """Validate nested binding definitions."""
+        for key, binding in nested_bindings.items():
+            if not isinstance(binding, dict):
+                self.errors.append(f"Invalid nested binding for key '{key}'")
+                continue
+            
+            if "command" not in binding:
+                self.errors.append(f"Missing command in nested binding for key '{key}'")
+            elif not isinstance(binding["command"], str):
+                self.errors.append(f"Invalid command format in nested binding for key '{key}'")
