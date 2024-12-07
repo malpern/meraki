@@ -3,6 +3,40 @@
 ## AST Structure
 The Abstract Syntax Tree (AST) is the core data structure that represents a parsed Meraki configuration. It serves as the contract between the parser and later phases.
 
+### Comment Handling Strategy
+The parser uses a multi-pass approach to handle comments:
+
+1. **First Pass: Comment Extraction**
+```python
+{
+  "comments": [
+    {
+      "type": "line",
+      "text": "Define modifiers",
+      "line_number": 1
+    },
+    {
+      "type": "inline",
+      "text": "Main modifier for app switching",
+      "line_number": 2,
+      "associated_code_line": 2
+    },
+    {
+      "type": "multiline",
+      "text": "This block configures\nall text editor bindings",
+      "line_number": 5,
+      "end_line": 7
+    }
+  ]
+}
+```
+
+2. **Second Pass: Clean Configuration Parsing**
+The parser processes the configuration with comments stripped, maintaining line numbers for later reattachment.
+
+3. **Third Pass: Comment Reattachment**
+Comments are attached to their relevant AST nodes based on line numbers and context.
+
 ### Structure Overview
 ```json
 {
@@ -37,57 +71,37 @@ The Abstract Syntax Tree (AST) is the core data structure that represents a pars
       },
       "comments": [],
       "line_number": 3
-    },
-    {
-      "key_combination": "mod1",
-      "key": "m",
-      "action": "open -a Mail",
-      "comments": ["# Email client"],
-      "line_number": 6
-    },
-    {
-      "key_combination": "mod1",
-      "key": "x",
-      "actions": [
-        {
-          "command": "open -a Slack"
-        },
-        {
-          "command": "open -a Discord"
-        }
-      ],
-      "comments": ["# Communication apps"],
-      "line_number": 7
     }
   ]
 }
 ```
 
 ### Key Components
-1. **Modifiers**:
+1. **Comments**:
+   - Extracted and processed separately
+   - Three types: line, inline, and multiline (@END...END)
+   - Preserved line numbers for accurate reattachment
+   - Associated with nearest meaningful code
+
+2. **Modifiers**:
    - Basic and compound modifiers
-   - Source comments and line numbers
-   - Original key combinations
+   - Line numbers for error reporting
+   - Attached comments from all three types
 
-2. **Keybindings**:
+3. **Keybindings**:
    - Simple and nested bindings
-   - Timeouts (default and custom)
-   - Action sequences
-   - Group syntax expansions
-   - Source tracking
-
-3. **Comments and Metadata**:
-   - Line comments
-   - Inline comments
-   - Source positions
-   - Original formatting
+   - Timeouts and actions
+   - Associated comments maintained through parsing
 
 ### Usage in Pipeline
 The AST structure is used by:
-1. **Validator**: Checks for errors and inconsistencies
-2. **Linter**: Analyzes for style and best practices
-3. **Formatter**: Preserves structure during reformatting
-4. **Compiler**: Transforms into TypeScript/Karabiner format
+1. **Parser**: 
+   - Extracts comments first
+   - Parses clean configuration
+   - Reattaches comments to AST nodes
+2. **Validator**: Checks for errors and inconsistencies
+3. **Formatter**: Uses comment positions for proper formatting
+4. **Compiler**: Preserves comments in output formats
 
 ## Example Outputs By Phase
 
@@ -411,59 +425,43 @@ writeToProfile('Default', rules)
 
 ## Error Handling Strategy
 
-### Pipeline Failure Modes
+### Comment-Related Errors
 1. **Parser Failures**:
 ```ini
-# Invalid syntax
-mod1 = lcmd + @invalid  # Parser error: Invalid modifier key '@invalid'
-mod1 - {: open -a Mail  # Parser error: Malformed block syntax
-```
-- Return specific line numbers and detailed error messages
-- Continue parsing to find additional errors
-- Generate partial AST for valid sections
+# Valid comments
+# Normal comment
+mod1 = lcmd + lalt  # Inline comment
 
-2. **Validation Failures**:
+# Invalid comments
+@END incomplete block  # Error: Missing END marker
+mod1 = lcmd + lalt # misplaced comment # duplicate comment
+```
+
+2. **Comment Validation**:
 ```ini
-# Undefined modifier
-undefined_mod - m : open -a Mail  # Validation error: Undefined modifier
+# Warning: Orphaned comment (no associated code)
+# This comment has no context
 
-# Duplicate binding
-mod1 - m : open -a Mail
-mod1 - m : open -a Chrome  # Validation error: Duplicate binding
+mod1 = lcmd + lalt
+
+@END
+Documentation block
+that should be attached
+to something
+END
+# Warning: No code follows this documentation block
 ```
-- Collect all validation errors before failing
-- Distinguish between errors (blocking) and warnings (non-blocking)
-- Allow `--force` flag to bypass non-critical validation
 
 ### Error Recovery Strategy
-1. **Partial Success Mode**:
-```bash
-# Example: Compile with partial success
-meraki-tool compile config.meraki --partial-success
+1. **Comment Processing**:
+   - Continue parsing even if comment extraction fails
+   - Mark malformed comments for warning output
+   - Preserve line numbers for error reporting
 
-# Output:
-Warning: 2 keybindings failed to compile
-- Line 15: Invalid modifier combination
-- Line 23: Unsupported command
-Successfully compiled 18/20 keybindings
-```
-
-2. **Error Aggregation**:
-- Collect all errors before stopping
-- Group related errors together
-- Provide context for each error
-
-3. **Debug Output**:
-```bash
-# Generate detailed debug info
-meraki-tool compile config.meraki --debug
-
-# Output includes:
-- Parser state at failure
-- AST fragment causing error
-- Generated TypeScript
-- Karabiner JSON output
-```
+2. **Comment Reattachment**:
+   - Best-effort matching of comments to code
+   - Warning for orphaned or misplaced comments
+   - Maintain all comments even if attachment fails
 
 ## Configuration Management
 

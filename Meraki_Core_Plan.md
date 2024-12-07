@@ -73,46 +73,32 @@ mod1 - k : focus --app "kitty"
 ```
 
 ### Current Features (v0.1):
-1. **Modifiers**: 
-   - Basic modifiers (`mod1`, `mod2`)
-   - Support for standard modifiers (cmd, alt, shift, ctrl)
-   - Compound modifiers (e.g., `mod2 + shift`)
-   - Modifier-only keybinds with activation flags:
-     ```ini
-     cmd ~down: show_app_switcher
-     cmd ~up:   hide_app_switcher
-     ```
-   - Activation flags (`~down`, `~up`, `~repeat`)
-   - Activation thresholds for modifiers
+1. **Modifiers** (Partially Implemented): 
+   - ✅ Basic modifiers (`mod1`, `mod2`)
+   - ✅ Support for standard modifiers (cmd, alt, shift, ctrl)
+   - ✅ Compound modifiers (e.g., `mod2 + shift`)
+   - ⚠️ Modifier-only keybinds with activation flags (In Progress)
+   - ⚠️ Activation flags (`~down`, `~up`, `~repeat`) (In Progress)
+   - ❌ Activation thresholds for modifiers (Not Started)
 
-2. **Basic Keybindings**:
-   - Simple key mapping (`mod1 - m`)
-   - Application launching (`open -a`)
-   - Application focus (`focus --app`)
+2. **Basic Keybindings** (Partially Implemented):
+   - ✅ Simple key mapping (`mod1 - m`)
+   - ✅ Application launching (`open -a`)
+   - ❌ Application focus (`focus --app`) (Not Started)
 
-3. **Core Syntax**:
-   - Leader keys with braces (`{}`)
-   - Default timeout (500ms)
-   - Optional custom timeout (`[Xms]`)
-   - Group syntax for similar commands:
-     ```ini
-     # App launching with groups
-     mod1 + { c, f, m } :
-         open -a { "Chrome", "Finder", "Mail" }
-     ```
-   - Command expansion with groups
-   - Multi-line commands with custom end markers
-   - Chain syntax for command sequences
+3. **Core Syntax** (Partially Implemented):
+   - ⚠️ Leader keys with braces (`{}`) (In Progress)
+   - ⚠️ Default timeout (500ms) (In Progress)
+   - ⚠️ Optional custom timeout (`[Xms]`) (In Progress)
+   - ❌ Group syntax for similar commands (Not Started)
+   - ❌ Command expansion with groups (Not Started)
+   - ⚠️ Multi-line commands with custom end markers (In Progress)
+   - ❌ Chain syntax for command sequences (Not Started)
 
-4. **Comments**:
-   - Line comments (`# comment`)
-   - Inline comments (`command  # comment`)
-   - Multi-line notes with `@END` markers:
-     ```ini
-     @END This is a multi-line note
-     that describes the following
-     keybinding in detail. END
-     ```
+4. **Comments** (Partially Implemented):
+   - ✅ Line comments (`# comment`)
+   - ✅ Inline comments (`command  # comment`)
+   - ⚠️ Multi-line notes with `@END` markers (In Progress)
 
 ### Future Features (v0.2+):
 
@@ -159,10 +145,21 @@ mod1 - k : focus --app "kitty"
 ## Development Plan
 
 ### Phase 1: Parsing (Current Phase)
-// ... existing Phase 1 content ...
+Current Status:
+- ✅ Basic lexer implementation
+- ✅ Basic modifier parsing
+- ✅ Simple keybinding parsing
+- ✅ Basic comment handling
+- ⚠️ Leader key parsing (In Progress)
+- ⚠️ Timeout parsing (In Progress)
+- ❌ Group syntax parsing (Not Started)
+- ❌ Command chain parsing (Not Started)
 
-### Phase 2: Validation (Partially Started)
-// ... existing Phase 2 content ...
+### Phase 2: Validation (Early Stages)
+Current Status:
+- ✅ Basic error reporting structure
+- ⚠️ Modifier validation (In Progress)
+- ❌ Keybinding validation (Not Started)
 
 ### Phase 3: Linting (Not Started)
 // ... existing Phase 3 content ...
